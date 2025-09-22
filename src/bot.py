@@ -31,6 +31,17 @@ voice_service = VoiceService()
 conversation_manager = ConversationManager(db)
 command_handler = CommandHandler(db, conversation_manager)
 
+async def send_split_messages(update: Update, text: str, parse_mode: str = None):
+    """Send text in chunks if it exceeds Telegram's message limit."""
+    chunks = voice_service.split_text(text)
+    for i, chunk in enumerate(chunks):
+        if len(chunks) > 1:
+            # Add chunk indicator if multiple chunks
+            chunk_text = f"[Part {i+1}/{len(chunks)}]\n{chunk}"
+        else:
+            chunk_text = chunk
+        await update.message.reply_text(chunk_text, parse_mode=parse_mode)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.add_user(
@@ -107,11 +118,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_mode = db.get_user_mode(user.id)
             
             if user_mode == 'rec':
-                # Recognition mode - only send transcribed text
-                await update.message.reply_text(transcribed_text)
+                # Recognition mode - only send transcribed text (split if needed)
+                await send_split_messages(update, transcribed_text)
             else:
                 # Agent mode - send transcribed text and AI response
-                await update.message.reply_text(f"📝 Transcribed: {transcribed_text}")
+                await send_split_messages(update, f"📝 Transcribed: {transcribed_text}")
                 
                 db.add_message(user.id, "user", transcribed_text, "voice")
                 
@@ -170,11 +181,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_mode = db.get_user_mode(user.id)
             
             if user_mode == 'rec':
-                # Recognition mode - only send transcribed text
-                await update.message.reply_text(transcribed_text)
+                # Recognition mode - only send transcribed text (split if needed)
+                await send_split_messages(update, transcribed_text)
             else:
                 # Agent mode - send transcribed text and AI response
-                await update.message.reply_text(f"📝 Transcribed: {transcribed_text}")
+                await send_split_messages(update, f"📝 Transcribed: {transcribed_text}")
                 
                 db.add_message(user.id, "user", transcribed_text, "voice")
                 
