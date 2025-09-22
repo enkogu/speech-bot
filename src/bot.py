@@ -3,18 +3,12 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from telegram import Update
-from telegram.constants import ChatAction
-from telegram.ext import (
-    Application,
-    CommandHandler as TelegramCommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes
-)
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pyrogram.enums import ChatAction
 import asyncio
 
-from config import TELEGRAM_BOT_TOKEN, SUPPORTED_AUDIO_FORMATS
+from config import TELEGRAM_BOT_TOKEN, API_ID, API_HASH, SUPPORTED_AUDIO_FORMATS
 from database import DatabaseManager
 from voice_service import VoiceService
 from conversation import ConversationManager
@@ -31,212 +25,245 @@ voice_service = VoiceService()
 conversation_manager = ConversationManager(db)
 command_handler = CommandHandler(db, conversation_manager)
 
-async def send_split_messages(update: Update, text: str, parse_mode: str = None):
+# Initialize Pyrogram client
+app = Client(
+    "speech_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=TELEGRAM_BOT_TOKEN
+)
+
+async def send_split_messages(message: Message, text: str, parse_mode: str = None):
     """Send text in chunks if it exceeds Telegram's message limit."""
     chunks = voice_service.split_text(text)
     for i, chunk in enumerate(chunks):
         if len(chunks) > 1:
-            # Add chunk indicator if multiple chunks
             chunk_text = f"[Part {i+1}/{len(chunks)}]\n{chunk}"
         else:
             chunk_text = chunk
-        await update.message.reply_text(chunk_text, parse_mode=parse_mode)
+        await message.reply_text(chunk_text)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+@app.on_message(filters.command("start") & filters.private)
+async def start(client: Client, message: Message):
+    user = message.from_user
     db.add_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
         last_name=user.last_name
     )
-    
+
     response = await command_handler.handle_command(user.id, 'start')
-    await update.message.reply_text(response)
+    await message.reply_text(response)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+@app.on_message(filters.command("help") & filters.private)
+async def help_command(client: Client, message: Message):
+    user_id = message.from_user.id
     response = await command_handler.handle_command(user_id, 'help')
-    await update.message.reply_text(response, parse_mode='Markdown')
+    await message.reply_text(response)
 
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+@app.on_message(filters.command("clear") & filters.private)
+async def clear_command(client: Client, message: Message):
+    user_id = message.from_user.id
     response = await command_handler.handle_command(user_id, 'clear')
-    await update.message.reply_text(response)
+    await message.reply_text(response)
 
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    query = ' '.join(context.args) if context.args else None
+@app.on_message(filters.command("search") & filters.private)
+async def search_command(client: Client, message: Message):
+    user_id = message.from_user.id
+    # Get the search query from the message text
+    text_parts = message.text.split(maxsplit=1)
+    query = text_parts[1] if len(text_parts) > 1 else None
     response = await command_handler.handle_command(user_id, 'search', query)
-    await update.message.reply_text(response)
+    await message.reply_text(response)
 
-async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+@app.on_message(filters.command("history") & filters.private)
+async def history_command(client: Client, message: Message):
+    user_id = message.from_user.id
     response = await command_handler.handle_command(user_id, 'history')
-    await update.message.reply_text(response, parse_mode='Markdown')
+    await message.reply_text(response)
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+@app.on_message(filters.command("stats") & filters.private)
+async def stats_command(client: Client, message: Message):
+    user_id = message.from_user.id
     response = await command_handler.handle_command(user_id, 'stats')
-    await update.message.reply_text(response)
+    await message.reply_text(response)
 
-async def rec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+@app.on_message(filters.command("rec") & filters.private)
+async def rec_command(client: Client, message: Message):
+    user_id = message.from_user.id
     response = await command_handler.handle_command(user_id, 'rec')
-    await update.message.reply_text(response, parse_mode='Markdown')
+    await message.reply_text(response)
 
-async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+@app.on_message(filters.command("agent") & filters.private)
+async def agent_command(client: Client, message: Message):
+    user_id = message.from_user.id
     response = await command_handler.handle_command(user_id, 'agent')
-    await update.message.reply_text(response, parse_mode='Markdown')
+    await message.reply_text(response)
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+@app.on_message(filters.voice & filters.private)
+async def handle_voice(client: Client, message: Message):
+    user = message.from_user
     db.add_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
         last_name=user.last_name
     )
-    
-    # Send typing indicator instead of text message
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    
+
+    # Send typing indicator
+    await client.send_chat_action(message.chat.id, ChatAction.TYPING)
+
     try:
-        voice = update.message.voice
-        file = await context.bot.get_file(voice.file_id)
-        
-        file_name = f"{user.id}_{update.message.message_id}.ogg"
-        
-        transcribed_text = await voice_service.download_and_transcribe(
-            file, 
-            file_name
-        )
-        
+        voice = message.voice
+
+        # Log file size
+        file_size_mb = voice.file_size / (1024 * 1024) if voice.file_size else 0
+        logger.info(f"Receiving voice message: {file_size_mb:.2f}MB")
+
+        # Download the voice message - Pyrogram handles any size up to 2GB
+        file_name = f"{user.id}_{message.id}.ogg"
+        file_path = await message.download(file_name=f"{voice_service.TEMP_DIR}/{file_name}")
+
+        # Transcribe the audio
+        transcribed_text = await voice_service.transcribe_audio(file_path)
+
         if transcribed_text:
             # Get user mode
             user_mode = db.get_user_mode(user.id)
-            
+
             if user_mode == 'rec':
-                # Recognition mode - only send transcribed text (split if needed)
-                await send_split_messages(update, transcribed_text)
+                # Recognition mode - only send transcribed text
+                await send_split_messages(message, transcribed_text)
             else:
                 # Agent mode - send transcribed text and AI response
-                await send_split_messages(update, f"📝 Transcribed: {transcribed_text}")
-                
+                await send_split_messages(message, f"📝 Transcribed: {transcribed_text}")
+
                 db.add_message(user.id, "user", transcribed_text, "voice")
-                
+
                 command, args = command_handler.parse_command(transcribed_text)
-                
+
                 if command:
                     response = await command_handler.handle_command(user.id, command, args)
                 else:
                     # Send typing indicator while generating response
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                    await client.send_chat_action(message.chat.id, ChatAction.TYPING)
                     response = await conversation_manager.get_response(user.id, transcribed_text)
-                
-                await update.message.reply_text(response, parse_mode='Markdown')
-        else:
-            await update.message.reply_text(
-                "❌ Sorry, I couldn't transcribe your voice message. Please try again."
-            )
-    
-    except Exception as e:
-        logger.error(f"Error handling voice message: {str(e)}")
-        await update.message.reply_text(
-            "❌ An error occurred processing your voice message. Please try again."
-        )
 
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+                await message.reply_text(response)
+        else:
+            # Silently log the failure
+            logger.warning("Transcription failed, no text returned")
+
+        # Clean up the downloaded file
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logger.warning(f"Could not delete temp file {file_path}: {e}")
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error handling voice message: {error_msg}")
+
+@app.on_message(filters.audio & filters.private)
+async def handle_audio(client: Client, message: Message):
+    user = message.from_user
     db.add_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
         last_name=user.last_name
     )
-    
-    # Send typing indicator instead of text message
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    
+
+    # Send typing indicator
+    await client.send_chat_action(message.chat.id, ChatAction.TYPING)
+
     try:
-        audio = update.message.audio
-        file_name = audio.file_name or f"{user.id}_{update.message.message_id}.mp3"
-        
+        audio = message.audio
+        file_name = audio.file_name if audio.file_name else f"{user.id}_{message.id}.mp3"
+
+        # Check if format is supported
         if not any(file_name.lower().endswith(fmt) for fmt in SUPPORTED_AUDIO_FORMATS):
-            await update.message.reply_text(
-                f"❌ Unsupported audio format. Supported formats: {', '.join(SUPPORTED_AUDIO_FORMATS)}"
-            )
+            logger.warning(f"Unsupported audio format: {file_name}")
             return
-        
-        file = await context.bot.get_file(audio.file_id)
-        
-        transcribed_text = await voice_service.download_and_transcribe(
-            file,
-            file_name
-        )
-        
+
+        # Log file size
+        file_size_mb = audio.file_size / (1024 * 1024) if audio.file_size else 0
+        logger.info(f"Receiving audio file: {file_size_mb:.2f}MB")
+
+        # Download the audio file - Pyrogram handles any size up to 2GB
+        file_path = await message.download(file_name=f"{voice_service.TEMP_DIR}/{file_name}")
+
+        # Transcribe the audio
+        transcribed_text = await voice_service.transcribe_audio(file_path)
+
         if transcribed_text:
             # Get user mode
             user_mode = db.get_user_mode(user.id)
-            
+
             if user_mode == 'rec':
-                # Recognition mode - only send transcribed text (split if needed)
-                await send_split_messages(update, transcribed_text)
+                # Recognition mode - only send transcribed text
+                await send_split_messages(message, transcribed_text)
             else:
                 # Agent mode - send transcribed text and AI response
-                await send_split_messages(update, f"📝 Transcribed: {transcribed_text}")
-                
+                await send_split_messages(message, f"📝 Transcribed: {transcribed_text}")
+
                 db.add_message(user.id, "user", transcribed_text, "voice")
-                
+
                 command, args = command_handler.parse_command(transcribed_text)
-                
+
                 if command:
                     response = await command_handler.handle_command(user.id, command, args)
                 else:
                     # Send typing indicator while generating response
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                    await client.send_chat_action(message.chat.id, ChatAction.TYPING)
                     response = await conversation_manager.get_response(user.id, transcribed_text)
-                
-                await update.message.reply_text(response, parse_mode='Markdown')
-        else:
-            await update.message.reply_text(
-                "❌ Sorry, I couldn't transcribe your audio file. Please try again."
-            )
-    
-    except Exception as e:
-        logger.error(f"Error handling audio file: {str(e)}")
-        await update.message.reply_text(
-            "❌ An error occurred processing your audio file. Please try again."
-        )
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+                await message.reply_text(response)
+        else:
+            # Silently log the failure
+            logger.warning("Audio transcription failed, no text returned")
+
+        # Clean up the downloaded file
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logger.warning(f"Could not delete temp file {file_path}: {e}")
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error handling audio file: {error_msg}")
+
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "help", "clear", "search", "history", "stats", "rec", "agent"]))
+async def handle_text(client: Client, message: Message):
+    user = message.from_user
     db.add_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
         last_name=user.last_name
     )
-    
-    text = update.message.text
-    
+
+    text = message.text
+
     command, args = command_handler.parse_command(text)
-    
+
     if command:
         response = await command_handler.handle_command(user.id, command, args)
     else:
         # Get user mode
         user_mode = db.get_user_mode(user.id)
-        
+
         if user_mode == 'agent':
             # Agent mode - process text with AI
             search_keywords = ['search for', 'look up', 'find information about', 'google']
             needs_search = any(keyword in text.lower() for keyword in search_keywords)
-            
+
             # Send typing indicator while generating response
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            
+            await client.send_chat_action(message.chat.id, ChatAction.TYPING)
+
             if needs_search:
                 response = await conversation_manager.search_and_respond(user.id, text)
             else:
@@ -248,43 +275,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Use /agent to enable AI responses for text messages,\n"
                 "or send me a voice message to transcribe."
             )
-    
-    await update.message.reply_text(response, parse_mode='Markdown')
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Update {update} caused error {context.error}")
-    
-    if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "❌ An error occurred. Please try again later."
-        )
+    await message.reply_text(response)
 
 def main():
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    application.add_handler(TelegramCommandHandler("start", start))
-    application.add_handler(TelegramCommandHandler("help", help_command))
-    application.add_handler(TelegramCommandHandler("clear", clear_command))
-    application.add_handler(TelegramCommandHandler("search", search_command))
-    application.add_handler(TelegramCommandHandler("history", history_command))
-    application.add_handler(TelegramCommandHandler("stats", stats_command))
-    application.add_handler(TelegramCommandHandler("rec", rec_command))
-    application.add_handler(TelegramCommandHandler("agent", agent_command))
-    
-    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    application.add_error_handler(error_handler)
-    
     logger.info("Bot is starting...")
-    
+
+    # Clean up temp files on startup
     try:
         voice_service.cleanup_temp_files()
     except Exception as e:
         logger.warning(f"Could not clean temp files on startup: {e}")
-    
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # Run the bot
+    app.run()
 
 if __name__ == '__main__':
     main()
